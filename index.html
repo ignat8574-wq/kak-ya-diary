@@ -1668,7 +1668,7 @@
   function syncFactorScore(input){input.style.setProperty("--pct",((Number(input.value)-1)/4*100)+"%");input.parentElement.querySelector(".factor-score-value").textContent=input.value}
   function getFactorScores(){const out={};if(!$("factorScores"))return out;$("factorScores").querySelectorAll("[data-factor-score]").forEach(i=>out[i.dataset.factorScore]=Number(i.value));return out}
   async function initAuth(){client=window.supabase.createClient(CONFIG.SUPABASE_URL,CONFIG.SUPABASE_ANON_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true,storage:window.localStorage}});const {data}=await client.auth.getSession();currentUser=data.session?.user||null;renderAuthState();client.auth.onAuthStateChange((_e,session)=>{currentUser=session?.user||null;renderAuthState()})}
-  function renderAuthState(){if(currentUser){hide("authCard");show("app");if($("settingsBtn"))show("settingsBtn");if($("logoutBtn"))show("logoutBtn");$("connectionPill").textContent="Пользователь: "+currentUser.email;startCleanupTimer();loadEntries();syncNotificationToggle()}else{show("authCard");hide("app");if($("settingsBtn"))hide("settingsBtn");if($("logoutBtn"))hide("logoutBtn");closeSettings();$("connectionPill").textContent="Пользователь: не выполнен вход";if(cleanupTimer){clearInterval(cleanupTimer);cleanupTimer=null}}}
+  function renderAuthState(){if(currentUser){hide("authCard");show("app");if($("settingsBtn"))show("settingsBtn");if($("logoutBtn"))show("logoutBtn");$("connectionPill").textContent="Пользователь: "+currentUser.email;startCleanupTimer();loadEntries();syncNotificationToggle();syncNotificationToggle()}else{show("authCard");hide("app");if($("settingsBtn"))hide("settingsBtn");if($("logoutBtn"))hide("logoutBtn");closeSettings();$("connectionPill").textContent="Пользователь: не выполнен вход";if(cleanupTimer){clearInterval(cleanupTimer);cleanupTimer=null}}}
   $("signupBtn").onclick=async()=>{const email=$("email").value.trim(),password=$("password").value;if(!email||!password)return setStatus("authStatus","Введи email и пароль.");const {error}=await client.auth.signUp({email,password,options:{emailRedirectTo:window.location.origin+window.location.pathname}});if(error)return setStatus("authStatus","Ошибка регистрации: "+error.message);setStatus("authStatus","Аккаунт создан. Проверь почту и подтверди email.")};
   $("loginBtn").onclick=async()=>{const email=$("email").value.trim(),password=$("password").value;if(!email||!password)return setStatus("authStatus","Введи email и пароль.");const {error}=await client.auth.signInWithPassword({email,password});if(error)return setStatus("authStatus","Ошибка входа: "+error.message)}; $("logoutBtn").onclick=async()=>client.auth.signOut();
   function getPayload(){return{type:$("entryTitle").value.trim()||defaultEntryTitle(),mood:Number($("mood").value),energy:Number($("energy").value),body_state:[String(Number($("body").value))],event_text:$("eventText").value.trim(),photo_url:currentPhotoUrls.length?JSON.stringify(currentPhotoUrls):null,updated_at:nowISO()}}
@@ -2769,20 +2769,55 @@ function scoreLabel(v){v=Number(v);return Number.isInteger(v)?String(v):v.toFixe
   function isPwaMode(){return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone===true}
   async function enableNotifications(){
     try{
-      if(!currentUser){setNotifyStatus("Сначала войди в аккаунт.");return}
-      if(!("Notification" in window)){setNotifyStatus("Этот браузер не поддерживает уведомления.");return}
-      if(!("serviceWorker" in navigator)||!("PushManager" in window)){
-        setNotifyStatus("Push-уведомления тут не поддерживаются. На iPhone открой приложение с иконки на экране Домой.");
-        return;
+      const toggle=$("notifyToggle");
+      setNotifyStatus("");
+
+      if(!currentUser){
+        if(toggle)toggle.checked=false;
+        setNotifyStatus("Сначала войди в аккаунт.");
+        return false;
       }
-      if(!isPwaMode())setNotifyStatus("На iPhone открой дневник именно с иконки на экране Домой, потом нажми снова.");
-      const permission=await Notification.requestPermission();
-      if(permission!=="granted"){setNotifyStatus("Уведомления не разрешены.");return}
+
+      if(!("Notification" in window)){
+        if(toggle)toggle.checked=false;
+        setNotifyStatus("Этот браузер не поддерживает уведомления.");
+        return false;
+      }
+
+      if(!("serviceWorker" in navigator) || !("PushManager" in window)){
+        if(toggle)toggle.checked=false;
+        setNotifyStatus("Push-уведомления тут не поддерживаются. На iPhone открой дневник именно с иконки на экране Домой.");
+        return false;
+      }
+
+      if(!isPwaMode()){
+        if(toggle)toggle.checked=false;
+        setNotifyStatus("На iPhone уведомления включаются только из приложения на экране Домой. Добавь сайт на экран Домой и открой оттуда.");
+        return false;
+      }
+
+      // Важно для iPhone: requestPermission должен запускаться прямо от действия пользователя по ползунку.
+      let permission=Notification.permission;
+      if(permission==="default"){
+        permission=await Notification.requestPermission();
+      }
+
+      if(permission!=="granted"){
+        if(toggle)toggle.checked=false;
+        setNotifyStatus("Уведомления не разрешены. Проверь iOS: Настройки → Уведомления.");
+        return false;
+      }
+
       const reg=await navigator.serviceWorker.ready;
       let sub=await reg.pushManager.getSubscription();
+
       if(!sub){
-        sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToUint8Array(VAPID_PUBLIC_KEY)});
+        sub=await reg.pushManager.subscribe({
+          userVisibleOnly:true,
+          applicationServerKey:urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+        });
       }
+
       const {error}=await client.from("push_subscriptions").upsert({
         user_id:currentUser.id,
         endpoint:sub.endpoint,
@@ -2792,9 +2827,76 @@ function scoreLabel(v){v=Number(v);return Number.isInteger(v)?String(v):v.toFixe
         reminder_times:["08:45","14:00","21:40"],
         updated_at:nowISO()
       },{onConflict:"user_id,endpoint"});
+
       if(error)throw error;
-      setNotifyStatus("Уведомления включены: 8:45, 14:00, 21:40 по Батуми.");
-    }catch(err){setNotifyStatus("Ошибка уведомлений: "+err.message)}
+
+      if(toggle)toggle.checked=true;
+      setNotifyStatus("");
+      return true;
+    }catch(err){
+      const toggle=$("notifyToggle");
+      if(toggle)toggle.checked=false;
+      setNotifyStatus("Ошибка уведомлений: "+err.message);
+      return false;
+    }
+  }
+
+  async function disableNotifications(){
+    try{
+      setNotifyStatus("");
+      const toggle=$("notifyToggle");
+
+      if("serviceWorker" in navigator && "PushManager" in window){
+        const reg=await navigator.serviceWorker.ready;
+        const sub=await reg.pushManager.getSubscription();
+
+        if(sub){
+          if(currentUser){
+            await client.from("push_subscriptions")
+              .update({enabled:false,updated_at:nowISO()})
+              .eq("user_id",currentUser.id)
+              .eq("endpoint",sub.endpoint);
+          }
+          await sub.unsubscribe();
+        }
+      }
+
+      if(toggle)toggle.checked=false;
+      setNotifyStatus("");
+    }catch(err){
+      setNotifyStatus("Не удалось выключить уведомления: "+err.message);
+    }
+  }
+
+  async function syncNotificationToggle(){
+    try{
+      const toggle=$("notifyToggle");
+      if(!toggle)return;
+
+      if(!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)){
+        toggle.checked=false;
+        return;
+      }
+
+      const reg=await navigator.serviceWorker.ready;
+      const sub=await reg.pushManager.getSubscription();
+      toggle.checked=!!sub && Notification.permission==="granted";
+    }catch(e){
+      const toggle=$("notifyToggle");
+      if(toggle)toggle.checked=false;
+    }
+  }
+
+  async function handleNotifyToggle(e){
+    const toggle=$("notifyToggle");
+    if(!toggle)return;
+
+    // Сразу возвращаем визуальное состояние назад, если включение не удалось.
+    if(toggle.checked){
+      await enableNotifications();
+    }else{
+      await disableNotifications();
+    }
   }
 
   function openSettings(){if(!currentUser)return;const modal=$("settingsModal");if(modal){modal.classList.add("show");modal.setAttribute("aria-hidden","false")}}
@@ -2804,7 +2906,9 @@ function scoreLabel(v){v=Number(v);return Number.isInteger(v)?String(v):v.toFixe
   if($("settingsModal"))$("settingsModal").addEventListener("click",e=>{if(e.target.id==="settingsModal")closeSettings()});
 
   registerPwaServiceWorker();
-  if($("enableNotifyBtn"))$("enableNotifyBtn").onclick=enableNotifications;
+  if($("notifyToggle")){
+    $("notifyToggle").addEventListener("change",handleNotifyToggle);
+  }
 
   $("saveBtn").onclick=saveEntry;$("clearBtn").onclick=clearForm;$("cancelEditBtn").onclick=clearForm;$("reloadBtn").onclick=loadEntries;$("exportBtn").onclick=exportResults;initAuth();
 </script>
